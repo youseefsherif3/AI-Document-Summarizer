@@ -11,6 +11,7 @@ import {
 } from "react";
 
 import type { UploadedDocument, DocumentType } from "@/types/document";
+import { upload as uploadBlob } from "@vercel/blob/client";
 
 import {
   ALLOWED_EXTENSIONS,
@@ -137,16 +138,44 @@ export function DocumentsProvider({ children }: { children: ReactNode }) {
         throw new Error("Original file is not available.");
       }
 
-      const formData = new FormData();
-      formData.append("file", document.file);
-
       const controller = new AbortController();
       controllers.current.set(document.id, controller);
-      const response = await fetch(`${apiUrl}/documents/upload/stream`, {
-        method: "POST",
-        body: formData,
-        signal: controller.signal,
-      });
+      const useVercelBlob =
+        process.env.NEXT_PUBLIC_VERCEL_BLOB_UPLOADS === "true";
+      let response: Response;
+
+      if (useVercelBlob) {
+        const extension = document.name.split(".").pop()?.toLowerCase();
+        const blob = await uploadBlob(
+          `documind/uploads/${document.id}.${extension}`,
+          document.file,
+          {
+            access: "private",
+            handleUploadUrl: "/api/document-uploads",
+            clientPayload: JSON.stringify({ documentId: document.id }),
+            abortSignal: controller.signal,
+          },
+        );
+        updateDocument(document.id, { progress: 50 });
+        response = await fetch(`${apiUrl}/documents/upload/stream/blob`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            pathname: blob.pathname,
+            filename: document.file.name,
+            file_size: document.file.size,
+          }),
+          signal: controller.signal,
+        });
+      } else {
+        const formData = new FormData();
+        formData.append("file", document.file);
+        response = await fetch(`${apiUrl}/documents/upload/stream`, {
+          method: "POST",
+          body: formData,
+          signal: controller.signal,
+        });
+      }
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
         throw new Error(

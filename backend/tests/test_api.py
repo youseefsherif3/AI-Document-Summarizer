@@ -1,6 +1,7 @@
 
 import asyncio
 from io import BytesIO
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 from starlette.datastructures import UploadFile as StarletteUploadFile
@@ -84,6 +85,84 @@ def test_cancelled_stream_does_not_save_partial_document(monkeypatch):
 
     assert '"type": "delta"' in first_event
     assert closed == [True]
+    assert documents == []
+
+
+def test_blob_stream_saves_summary_and_deletes_temporary_upload(monkeypatch):
+    deleted = []
+
+    async def mock_head(pathname):
+        return SimpleNamespace(size=len(b"Blob document content."))
+
+    async def mock_get(pathname, *, access):
+        assert access == "private"
+        return SimpleNamespace(body=b"Blob document content.")
+
+    async def mock_delete(pathname):
+        deleted.append(pathname)
+
+    async def mock_stream(text):
+        yield "A blob summary."
+
+    monkeypatch.setattr(main.blob, "head_blob", mock_head)
+    monkeypatch.setattr(main.blob, "get_blob", mock_get)
+    monkeypatch.setattr(main.blob, "delete_blob", mock_delete)
+    monkeypatch.setattr(main, "stream_summary", mock_stream)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/documents/upload/stream/blob",
+            json={
+                "pathname": "documind/uploads/file-random.txt",
+                "filename": "blob.txt",
+                "file_size": len(b"Blob document content."),
+            },
+        )
+        documents = client.get("/documents").json()
+
+    assert response.status_code == 200
+    assert '"type": "done"' in response.text
+    assert documents[0]["summary"] == "A blob summary."
+    assert deleted == ["documind/uploads/file-random.txt"]
+
+
+def test_cancelled_blob_stream_deletes_temporary_upload_without_persisting(monkeypatch):
+    pathname = "documind/uploads/cancel-random.txt"
+    deleted = []
+
+    async def mock_head(_pathname):
+        return SimpleNamespace(size=10)
+
+    async def mock_get(_pathname, *, access):
+        return SimpleNamespace(body=b"Cancel me.")
+
+    async def mock_delete(deleted_path):
+        deleted.append(deleted_path)
+
+    async def mock_stream(_text):
+        yield "Partial summary"
+        yield "Never reached"
+
+    monkeypatch.setattr(main.blob, "head_blob", mock_head)
+    monkeypatch.setattr(main.blob, "get_blob", mock_get)
+    monkeypatch.setattr(main.blob, "delete_blob", mock_delete)
+    monkeypatch.setattr(main, "stream_summary", mock_stream)
+
+    async def cancel_after_first_chunk():
+        upload = main.BlobSummaryRequest(
+            pathname=pathname, filename="cancel.txt", file_size=10
+        )
+        response = await main.upload_document_stream_from_blob(upload)
+        first_event = await anext(response.body_iterator)
+        await response.body_iterator.aclose()
+        return first_event
+
+    with TestClient(app) as client:
+        first_event = asyncio.run(cancel_after_first_chunk())
+        documents = client.get("/documents").json()
+
+    assert '"type": "delta"' in first_event
+    assert deleted == [pathname]
     assert documents == []
 
 
