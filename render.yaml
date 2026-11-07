@@ -2,16 +2,12 @@ services:
   - type: web
     name: ai-document-summarizer-api
     runtime: python
-    plan: starter
+    plan: free
     buildCommand: pip install -r backend/requirements.txt
     startCommand: cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT
-    disk:
-      name: document-data
-      mountPath: /var/data
-      sizeGB: 1
     envVars:
-      - key: AI_DOCUMENTS_DB
-        value: /var/data/documents.db
+      - key: DATABASE_URL
+        sync: false
       - key: OPENROUTER_API_KEY
         sync: false
       - key: OPENROUTER_MODEL

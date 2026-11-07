@@ -7,6 +7,7 @@ import os
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from sqlalchemy import text
 from pypdf import PdfReader
 from docx import Document
 
@@ -177,7 +178,7 @@ async def upload_document(file: UploadFile = File(...)):
 def get_documents():
     with get_connection() as connection:
         rows = connection.execute(
-            """
+            text("""
             SELECT
                 id,
                 filename,
@@ -187,8 +188,8 @@ def get_documents():
                 created_at
             FROM documents
             ORDER BY created_at DESC, id DESC
-            """
-        ).fetchall()
+            """)
+        ).mappings().all()
 
     return [
         {
@@ -207,9 +208,9 @@ def get_documents():
 def get_dashboard():
     with get_connection() as connection:
         rows = connection.execute(
-            """SELECT id, filename, file_type, file_size, summary, created_at
-               FROM documents ORDER BY created_at DESC, id DESC"""
-        ).fetchall()
+            text("""SELECT id, filename, file_type, file_size, summary, created_at
+                    FROM documents ORDER BY created_at DESC, id DESC""")
+        ).mappings().all()
 
     types = {}
     for row in rows:

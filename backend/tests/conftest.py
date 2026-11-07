@@ -5,4 +5,5 @@ import app.database as database
 
 @pytest.fixture(autouse=True)
 def isolated_database(monkeypatch, tmp_path):
-    monkeypatch.setattr(database, "DATABASE_NAME", str(tmp_path / "documents.db"))
+    test_database = tmp_path / "documents.db"
+    monkeypatch.setattr(database, "DATABASE_URL", f"sqlite:///{test_database.as_posix()}")

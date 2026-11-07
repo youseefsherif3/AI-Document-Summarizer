@@ -41,6 +41,7 @@ yarn-error.log*
 # local backend state and secrets
 backend/.env
 backend/.venv/
+backend/.venv-check/
 backend/documents.db
 backend/documents.db-*
 backend/.pytest_cache/

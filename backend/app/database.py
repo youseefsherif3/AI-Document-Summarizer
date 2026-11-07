@@ -1,47 +1,88 @@
-
 import os
-import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
+
+from sqlalchemy import (
+    Column,
+    DateTime,
+    Integer,
+    LargeBinary,
+    MetaData,
+    String,
+    Table,
+    Text,
+    create_engine,
+    inspect,
+    text,
+)
+from sqlalchemy.engine import Connection, Engine
+from dotenv import load_dotenv
+
+
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+
 
 DATABASE_NAME = os.getenv(
     "AI_DOCUMENTS_DB",
     str(Path(__file__).resolve().parents[1] / "documents.db"),
 )
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+metadata = MetaData()
+documents = Table(
+    "documents",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("filename", String, nullable=False),
+    Column("file_type", String, nullable=False),
+    Column("file_size", Integer, nullable=False),
+    Column("file_content", LargeBinary, nullable=False),
+    Column("extracted_text", Text, nullable=False),
+    Column("summary", Text, nullable=True),
+    Column("created_at", DateTime, server_default=text("CURRENT_TIMESTAMP")),
+)
+
+_engines: dict[str, Engine] = {}
 
 
-def get_connection():
-    connection = sqlite3.connect(DATABASE_NAME)
-    connection.row_factory = sqlite3.Row
-    return connection
+def _database_url() -> str:
+    if DATABASE_URL:
+        # Neon provides a PostgreSQL URL without a SQLAlchemy driver suffix.
+        url = DATABASE_URL
+        if url.startswith("postgres://"):
+            return url.replace("postgres://", "postgresql+psycopg://", 1)
+        if url.startswith("postgresql://"):
+            return url.replace("postgresql://", "postgresql+psycopg://", 1)
+        return url
+
+    # Keep local development and tests simple while production uses Neon.
+    return f"sqlite:///{Path(DATABASE_NAME).resolve().as_posix()}"
+
+
+def _engine() -> Engine:
+    url = _database_url()
+    if url not in _engines:
+        connect_args = {"check_same_thread": False} if url.startswith("sqlite:") else {}
+        _engines[url] = create_engine(url, pool_pre_ping=True, connect_args=connect_args)
+    return _engines[url]
+
+
+@contextmanager
+def get_connection() -> Iterator[Connection]:
+    with _engine().begin() as connection:
+        yield connection
 
 
 def initialize_database():
-    with get_connection() as connection:
-        connection.execute("""
-            CREATE TABLE IF NOT EXISTS documents (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                filename TEXT NOT NULL,
-                file_type TEXT NOT NULL,
-                file_size INTEGER NOT NULL,
-                file_content BLOB NOT NULL,
-                extracted_text TEXT NOT NULL,
-                summary TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+    engine = _engine()
+    metadata.create_all(engine)
 
-        # Add the summary column to existing databases if it doesn't exist.
-        columns = connection.execute(
-            "PRAGMA table_info(documents)"
-        ).fetchall()
-
-        column_names = [column["name"] for column in columns]
-
-        if "summary" not in column_names:
-            connection.execute("""
-                ALTER TABLE documents
-                ADD COLUMN summary TEXT
-            """)
+    # Support existing SQLite databases created before summaries were stored.
+    columns = {column["name"] for column in inspect(engine).get_columns("documents")}
+    if "summary" not in columns:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE documents ADD COLUMN summary TEXT"))
 
 
 def save_document(
@@ -53,47 +94,31 @@ def save_document(
     summary: str | None = None,
 ):
     with get_connection() as connection:
-        cursor = connection.execute(
-            """
-            INSERT INTO documents (
-                filename,
-                file_type,
-                file_size,
-                file_content,
-                extracted_text,
-                summary
-            )
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                filename,
-                file_type,
-                file_size,
-                file_content,
-                extracted_text,
-                summary,
+        result = connection.execute(
+            documents.insert().values(
+                filename=filename,
+                file_type=file_type,
+                file_size=file_size,
+                file_content=file_content,
+                extracted_text=extracted_text,
+                summary=summary,
             )
         )
-
-        return cursor.lastrowid
+        return result.inserted_primary_key[0]
 
 
 def update_document_summary(document_id: int, summary: str):
     with get_connection() as connection:
         connection.execute(
-            """
-            UPDATE documents
-            SET summary = ?
-            WHERE id = ?
-            """,
-            (summary, document_id)
+            documents.update()
+            .where(documents.c.id == document_id)
+            .values(summary=summary)
         )
+
 
 def delete_document(document_id: int):
     with get_connection() as connection:
-        cursor = connection.execute(
-            "DELETE FROM documents WHERE id = ?",
-            (document_id,)
+        result = connection.execute(
+            documents.delete().where(documents.c.id == document_id)
         )
-
-        return cursor.rowcount > 0
+        return result.rowcount > 0
